@@ -44,6 +44,7 @@ pub async fn chat_handler(
     let vector_store = state.vector_store.clone();
     let db_pool = state.db_pool.clone();
     let gemini_client = state.gemini_client.clone();
+    let embedding_service = state.embedding_service.clone();
     let user_id = claims.user_id.clone();
     let request_counter = state.request_counter.clone();
     
@@ -65,38 +66,31 @@ pub async fn chat_handler(
             })
             .unwrap());
         
+        
         // Check if embeddings are enabled (set ENABLE_EMBEDDINGS=false to skip)
         let enable_embeddings = std::env::var("ENABLE_EMBEDDINGS")
-            .unwrap_or_else(|_| "false".to_string())
+            .unwrap_or_else(|_| "true".to_string())
             .to_lowercase() == "true";
         
         let query_embedding = if enable_embeddings {
-            // Add delay before embedding API call to avoid rate limits
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            
-            // Generate real embedding using Gemini (with retry logic for rate limits)
-            match generate_query_embedding(&gemini_client, &user_message, Some(&request_counter)).await {
+            // Use local embedding service (fast, no API calls)
+            match embedding_service.embed_text(&user_message).await {
                 Ok(emb) => emb,
                 Err(e) => {
-                    let error_msg = e.to_string();
-                    if error_msg.contains("RESOURCE_EXHAUSTED") || error_msg.contains("429") {
-                        tracing::error!("Gemini API rate limit exceeded: {}", e);
-                        yield Ok::<Event, Infallible>(Event::default()
-                            .event("thinking")
-                            .json_data(ThinkingData {
-                                step: "⚠️ API rate limit reached - proceeding without context search...".to_string()
-                            })
-                            .unwrap());
-                    } else {
-                        tracing::error!("Embedding generation failed: {}", e);
-                    }
-                    vec![0.0; 768] // Fallback to zero vector (won't find relevant sources)
+                    tracing::error!("Local embedding generation failed: {}", e);
+                    yield Ok::<Event, Infallible>(Event::default()
+                        .event("thinking")
+                        .json_data(ThinkingData {
+                            step: "⚠️ Embedding failed - proceeding without context search...".to_string()
+                        })
+                        .unwrap());
+                    vec![0.0; 384] // Fallback to zero vector
                 }
             }
         } else {
-            // Embeddings disabled - skip API call entirely
+            // Embeddings disabled - skip entirely
             tracing::info!("Embeddings disabled via ENABLE_EMBEDDINGS=false");
-            vec![0.0; 768]
+            vec![0.0; 384]
         };
         
         // Step 3: Retrieve user's uploaded files
@@ -181,14 +175,14 @@ pub async fn chat_handler(
         };
         
         // Add delay before chat generation API call to avoid rate limits
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         
         // Log chat generation request
         request_counter.log_chat_request(&format!("User query: {}", user_message.chars().take(50).collect::<String>()));
         
         // Call Gemini API for streaming response (with retry logic)
         const MAX_CHAT_RETRIES: u32 = 3;
-        const CHAT_BASE_DELAY_MS: u64 = 1000;
+        const CHAT_BASE_DELAY_MS: u64 = 2000;
         
         for attempt in 0..MAX_CHAT_RETRIES {
             match gemini_client

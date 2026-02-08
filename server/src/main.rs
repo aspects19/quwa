@@ -2,10 +2,13 @@ pub mod health;
 pub mod auth;
 pub mod chat;
 pub mod db;
+pub mod db_mongo;
 pub mod rag;
 pub mod processing;
 pub mod media_ingestion;
 pub mod request_counter;
+pub mod embeddings;
+pub mod orphanet_loader;
 
 use anyhow::Result;
 use axum::{Router, routing::{get, post}};
@@ -17,11 +20,13 @@ use crate::{chat::chat_handler, health::health_check};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db_pool: sqlx::PgPool,
+    pub db: mongodb::Database,
+    pub db_pool: sqlx::PgPool,  // Keep for backward compatibility temporarily
     pub vector_store: Arc<rag::vector_store::RagVectorStore>,
     pub pdf_processor: Arc<processing::PdfProcessor>,
     pub image_processor: Arc<processing::ImageProcessor>,
     pub gemini_client: Arc<rig::providers::gemini::Client>,
+    pub embedding_service: Arc<embeddings::LocalEmbeddingService>,
     pub request_counter: request_counter::RequestCounter,
 }
 
@@ -33,26 +38,41 @@ async fn main() -> Result<()> {
     tracing::info!("Starting Quwa Medical Assistant Server...");
 
     // Get environment variables
+    let mongodb_url = std::env::var("MONGODB_URL")
+        .expect("MONGODB_URL not set, Set it in .env file");
+    
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| {
-            tracing::warn!("DATABASE_URL not set, using default");
-            "postgresql://localhost/quwa".to_string()
-        });
+        .unwrap_or_else(|_| "postgresql://localhost/quwa".to_string());
     
     let gemini_api_key = std::env::var("GEMINI_API_KEY")
-        .unwrap_or_else(|_| {
-            tracing::warn!("GEMINI_API_KEY not set");
-            String::new()
+        .expect("GEMINI_API_KEY not set, Set it in .env file");
+
+    // Initialize MongoDB
+    tracing::info!("Connecting to MongoDB...");
+    let mongo_client = db_mongo::create_client(&mongodb_url).await?;
+    let db = db_mongo::get_database(&mongo_client, "quwa");
+    tracing::info!("MongoDB connected successfully");
+
+    // Initialize PostgreSQL (keep temporarily for compatibility)
+    tracing::info!("Connecting to PostgreSQL (legacy)...");
+    let db_pool = db::create_pool(&database_url).await
+        .unwrap_or_else(|e| {
+            tracing::warn!("PostgreSQL connection failed: {}, continuing without it", e);
+            panic!("Need PostgreSQL for now")
         });
 
-    // Initialize database
-    tracing::info!("Connecting to database...");
-    let db_pool = db::create_pool(&database_url).await?;
-    tracing::info!("Database connected and migrations run successfully");
+    // Initialize local embedding service
+    tracing::info!("Initializing local embedding service...");
+    let embedding_service = Arc::new(embeddings::LocalEmbeddingService::new()?);
+    tracing::info!("Embedding service ready (dimension: {})", embedding_service.dimension());
 
-    // Initialize vector store
-    tracing::info!("Initializing vector store...");
-    let vector_store = Arc::new(rag::vector_store::RagVectorStore::new());
+    // Initialize MongoDB vector store (persistent!)
+    tracing::info!("Initializing MongoDB vector store...");
+    let vector_store = Arc::new(
+        rag::vector_store::RagVectorStore::new(&db, embedding_service.clone()).await?
+    );
+    let vector_count = vector_store.count().await;
+    tracing::info!("Vector store initialized ({} existing documents)", vector_count);
 
     // Initialize shared Gemini client
     tracing::info!("Initializing Gemini client...");
@@ -68,17 +88,35 @@ async fn main() -> Result<()> {
 
     // Create application state
     let state = AppState {
+        db: db.clone(),
         db_pool,
-        vector_store,
+        vector_store: vector_store.clone(),
         pdf_processor,
         image_processor,
         gemini_client,
+        embedding_service: embedding_service.clone(),
         request_counter,
     };
 
-    // TODO: Bootstrap Orphadata
-    // tracing::info!("Loading Orphadata into vector store...");
-    // orphadata::ingestion::ingest_to_vector_store(&state.vector_store, &gemini_client, &state.db_pool).await?;
+    // Load Orphanet data if enabled
+    let load_orphanet = std::env::var("LOAD_ORPHANET")
+        .unwrap_or_else(|_| "false".to_string())
+        .to_lowercase() == "true";
+    
+    if load_orphanet {
+        tracing::info!("Loading Orphanet dataset...");
+        match orphanet_loader::load_orphanet_from_env(&vector_store, &embedding_service).await {
+            Ok(count) => {
+                tracing::info!("✓ Loaded {} Orphanet disorders", count);
+            }
+            Err(e) => {
+                tracing::error!("Failed to load Orphanet data: {}", e);
+                tracing::warn!("Continuing without Orphanet data...");
+            }
+        }
+    } else {
+        tracing::info!("Orphanet loading disabled (set LOAD_ORPHANET=true to enable)");
+    }
 
     // Build router
     let app = Router::new()
@@ -90,6 +128,7 @@ async fn main() -> Result<()> {
 
     let listener = TcpListener::bind("127.0.0.1:3000").await?;
     tracing::info!("Server listening on {}", listener.local_addr()?);
+    println!("Server running at http://localhost:3000");
     
     axum::serve(listener, app).await?;
 

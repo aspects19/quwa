@@ -107,14 +107,14 @@ export default function ChatInterface() {
         );
       });
 
-      source.addEventListener('done', (e: any) => {
+      source.addEventListener('done', () => {
         setIsLoading(false);
         isDone = true;
         source.close();
         sseSourceRef.current = null;
       });
       
-      source.addEventListener('error', (e: any) => {
+      source.addEventListener('error', () => {
         if (isDone) {
           return;
         }

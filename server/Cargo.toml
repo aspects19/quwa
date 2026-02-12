@@ -60,5 +60,3 @@ base64 = "0.22"
 
 # Local embeddings
 fastembed = "4.4"
-rig-mongodb = "0.3.6"
-mongodb = "3.5.1"

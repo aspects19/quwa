@@ -4,3 +4,9 @@
 # dotenv
 .env
 .env.local
+
+# FastEmbed cache (model files - auto-downloaded)
+.fastembed_cache/
+
+# Dataset files (large XML files)
+dataset/

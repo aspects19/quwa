@@ -105,3 +105,75 @@ pub async fn create_embedding_metadata(
     
     Ok(metadata)
 }
+
+// Vector database operations
+
+pub async fn add_embedding(
+    pool: &PgPool,
+    text: String,
+    embedding: Vec<f32>,
+    source_type: String,
+    source_id: String,
+    file_name: Option<String>,
+    orpha_code: Option<String>,
+) -> Result<Embedding> {
+    let embedding = sqlx::query_as::<_, Embedding>(
+        "INSERT INTO embeddings (text, embedding, source_type, source_id, file_name, orpha_code)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, text, embedding, source_type, source_id, file_name, orpha_code, created_at"
+    )
+    .bind(&text)
+    .bind(&embedding)
+    .bind(&source_type)
+    .bind(&source_id)
+    .bind(&file_name)
+    .bind(&orpha_code)
+    .fetch_one(pool)
+    .await?;
+    
+    Ok(embedding)
+}
+
+pub async fn search_embeddings(
+    pool: &PgPool,
+    query_embedding: Vec<f32>,
+    limit: i64,
+) -> Result<Vec<(String, f32, String, String, Option<String>, Option<String>)>> {
+    // Use cosine distance operator (<=>)
+    // Lower distance = higher similarity
+    // We convert to similarity score (1 - distance) for consistency
+    let results = sqlx::query_as::<_, (String, f32, String, String, Option<String>, Option<String>)>(
+        "SELECT text, 
+                1 - (embedding <=> $1) as similarity,
+                source_type, 
+                source_id, 
+                file_name, 
+                orpha_code
+         FROM embeddings
+         ORDER BY embedding <=> $1
+         LIMIT $2"
+    )
+    .bind(&query_embedding)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    
+    Ok(results)
+}
+
+pub async fn count_embeddings(pool: &PgPool) -> Result<i64> {
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM embeddings")
+        .fetch_one(pool)
+        .await?;
+    
+    Ok(count.0)
+}
+
+pub async fn count_embeddings_by_source(pool: &PgPool, source_type: &str) -> Result<i64> {
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM embeddings WHERE source_type = $1")
+        .bind(source_type)
+        .fetch_one(pool)
+        .await?;
+    
+    Ok(count.0)
+}

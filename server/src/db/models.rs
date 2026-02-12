@@ -51,3 +51,37 @@ pub struct OrphadataDisease {
     pub category: Option<String>,
     pub last_updated: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Embedding {
+    pub id: Uuid,
+    pub text: String,
+    #[serde(skip_serializing)]
+    pub embedding: Vec<f32>, // pgvector type
+    pub source_type: String,
+    pub source_id: String,
+    pub file_name: Option<String>,
+    pub orpha_code: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+// Custom FromRow implementation for Embedding to handle pgvector type
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Embedding {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+        
+        // Extract the vector as a raw pgvector type and convert to Vec<f32>
+        let embedding_raw: Vec<f32> = row.try_get("embedding")?;
+        
+        Ok(Embedding {
+            id: row.try_get("id")?,
+            text: row.try_get("text")?,
+            embedding: embedding_raw,
+            source_type: row.try_get("source_type")?,
+            source_id: row.try_get("source_id")?,
+            file_name: row.try_get("file_name")?,
+            orpha_code: row.try_get("orpha_code")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+}

@@ -2,7 +2,6 @@ pub mod health;
 pub mod auth;
 pub mod chat;
 pub mod db;
-pub mod db_mongo;
 pub mod rag;
 pub mod processing;
 pub mod media_ingestion;
@@ -20,8 +19,7 @@ use crate::{chat::chat_handler, health::health_check};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: mongodb::Database,
-    pub db_pool: sqlx::PgPool,  // Keep for backward compatibility temporarily
+    pub db_pool: sqlx::PgPool,
     pub vector_store: Arc<rag::vector_store::RagVectorStore>,
     pub pdf_processor: Arc<processing::PdfProcessor>,
     pub image_processor: Arc<processing::ImageProcessor>,
@@ -38,38 +36,26 @@ async fn main() -> Result<()> {
     tracing::info!("Starting Quwa Medical Assistant Server...");
 
     // Get environment variables
-    let mongodb_url = std::env::var("MONGODB_URL")
-        .expect("MONGODB_URL not set, Set it in .env file");
-    
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://localhost/quwa".to_string());
+        .expect("DATABASE_URL not set, Set it in .env file");
     
     let gemini_api_key = std::env::var("GEMINI_API_KEY")
         .expect("GEMINI_API_KEY not set, Set it in .env file");
 
-    // Initialize MongoDB
-    tracing::info!("Connecting to MongoDB...");
-    let mongo_client = db_mongo::create_client(&mongodb_url).await?;
-    let db = db_mongo::get_database(&mongo_client, "quwa");
-    tracing::info!("MongoDB connected successfully");
-
-    // Initialize PostgreSQL (keep temporarily for compatibility)
-    tracing::info!("Connecting to PostgreSQL (legacy)...");
-    let db_pool = db::create_pool(&database_url).await
-        .unwrap_or_else(|e| {
-            tracing::warn!("PostgreSQL connection failed: {}, continuing without it", e);
-            panic!("Need PostgreSQL for now")
-        });
+    // Initialize PostgreSQL
+    tracing::info!("Connecting to PostgreSQL...");
+    let db_pool = db::create_pool(&database_url).await?;
+    tracing::info!("PostgreSQL connected successfully");
 
     // Initialize local embedding service
     tracing::info!("Initializing local embedding service...");
     let embedding_service = Arc::new(embeddings::LocalEmbeddingService::new()?);
     tracing::info!("Embedding service ready (dimension: {})", embedding_service.dimension());
 
-    // Initialize MongoDB vector store (persistent!)
-    tracing::info!("Initializing MongoDB vector store...");
+    // Initialize PostgreSQL vector store with pgvector
+    tracing::info!("Initializing PostgreSQL vector store...");
     let vector_store = Arc::new(
-        rag::vector_store::RagVectorStore::new(&db, embedding_service.clone()).await?
+        rag::vector_store::RagVectorStore::new(&db_pool, embedding_service.clone()).await?
     );
     let vector_count = vector_store.count().await;
     tracing::info!("Vector store initialized ({} existing documents)", vector_count);
@@ -88,7 +74,6 @@ async fn main() -> Result<()> {
 
     // Create application state
     let state = AppState {
-        db: db.clone(),
         db_pool,
         vector_store: vector_store.clone(),
         pdf_processor,

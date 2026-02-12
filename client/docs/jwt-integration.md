@@ -25,6 +25,7 @@ Added `getValidJWT()` function that:
 export async function getValidJWT(): Promise<string> {
   try {
     const jwt = await account.createJWT();
+    console.log(jwt.jwt);
     localStorage.setItem('jwt_token', jwt.jwt);
     return jwt.jwt;
   } catch (error) {

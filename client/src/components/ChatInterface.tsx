@@ -1,17 +1,32 @@
 import { useRef, useState, useEffect } from "react";
-import { Send, Loader2 } from "lucide-react";
+import { Send, Loader2, FileText, Image as ImageIcon, X, Paperclip, Plus } from "lucide-react";
 import ThinkingProcess from "./ThinkingProcess";
+import SourceCitation from "./SourceCitation";
 import { getValidJWT } from "@/lib/appwrite";
 import {SSE} from 'sse.js';
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+
+interface UploadedFile {
+  id: string;
+  name: string;
+  status: 'uploading' | 'processing' | 'completed' | 'failed';
+  error?: string;
+}
+
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   thinking?: string[];
+  sources?: Array<{
+    source_type: string;
+    source_id: string;
+    relevance: number;
+  }>;
 }
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const inputRef = useRef<HTMLDivElement>(null);
@@ -39,6 +54,112 @@ export default function ChatInterface() {
       handleSubmit(e as any);
     }
   };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    Array.from(files).forEach(file => {
+      const error = validateFile(file);
+      if (error) {
+        setUploadedFiles(prev => [...prev, {
+          id: `${Date.now()}-${file.name}`,
+          name: file.name,
+          status: 'failed',
+          error,
+        }]);
+      } else {
+        uploadFile(file);
+      }
+    });
+
+    // Reset input
+    e.target.value = '';
+  };
+
+  const validateFile = (file: File): string | null => {
+    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+    const ALLOWED_EXTENSIONS = ['pdf', 'jpg', 'jpeg', 'png'];
+
+    if (file.size > MAX_FILE_SIZE) {
+      return 'File size exceeds 50MB limit';
+    }
+
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (!extension || !ALLOWED_EXTENSIONS.includes(extension)) {
+      return 'Only PDF and image files (JPG, PNG) are allowed';
+    }
+
+    return null;
+  };
+
+  const uploadFile = async (file: File) => {
+    const fileId = `${Date.now()}-${file.name}`;
+    
+    setUploadedFiles(prev => [...prev, {
+      id: fileId,
+      name: file.name,
+      status: 'uploading',
+    }]);
+
+    try {
+      const jwtToken = await getValidJWT();
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch(`${BACKEND_URL}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${jwtToken}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Upload failed');
+      }
+
+      await response.json();
+      
+      setUploadedFiles(prev => prev.map(f => 
+        f.id === fileId 
+          ? { ...f, status: 'processing' }
+          : f
+      ));
+
+      setTimeout(() => {
+        setUploadedFiles(prev => prev.map(f => 
+          f.id === fileId 
+            ? { ...f, status: 'completed' }
+            : f
+        ));
+      }, 2000);
+
+    } catch (error) {
+      console.error('Upload error:', error);
+      setUploadedFiles(prev => prev.map(f => 
+        f.id === fileId 
+          ? { 
+              ...f, 
+              status: 'failed', 
+              error: error instanceof Error ? error.message : 'Upload failed'
+            }
+          : f
+      ));
+    }
+  };
+
+  const removeFile = (id: string) => {
+    setUploadedFiles(prev => prev.filter(f => f.id !== id));
+  };
+
+  const getFileIcon = (fileName: string) => {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') return FileText;
+    return ImageIcon;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -79,6 +200,7 @@ export default function ChatInterface() {
         role: "assistant",
         content: "",
         thinking: [],
+        sources: [],
       };
       setMessages((prev) => [...prev, initialAssistantMessage]);
       
@@ -102,6 +224,18 @@ export default function ChatInterface() {
           prev.map((msg) => 
             msg.id === assistantMessageId 
               ? { ...msg, content: accumulatedContent, thinking: [] }
+              : msg
+          )
+        );
+      });
+
+      source.addEventListener('source', (e: any) => {
+        const data = JSON.parse(e.data);
+        
+        setMessages((prev) => 
+          prev.map((msg) => 
+            msg.id === assistantMessageId 
+              ? { ...msg, sources: [...(msg.sources || []), data] }
               : msg
           )
         );
@@ -160,7 +294,53 @@ export default function ChatInterface() {
                 onSubmit={handleSubmit}
                 className="rounded-2xl pb-2 border border-white/10 bg-white/5 backdrop-blur-md shadow-lg transition focus-within:border-info/20 focus-within:shadow-primary/10"
               >
+                {/* Uploaded Files Display */}
+                {uploadedFiles.length > 0 && (
+                  <div className="px-4 pt-3 pb-2 border-b border-white/10 space-y-1">
+                    {uploadedFiles.map((file) => {
+                      const FileIcon = getFileIcon(file.name);
+                      return (
+                        <div
+                          key={file.id}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white/5 text-sm"
+                        >
+                          <FileIcon className="w-3.5 h-3.5 text-white/60 shrink-0" />
+                          <span className="flex-1 text-white/80 truncate text-xs">{file.name}</span>
+                          <span className={`text-xs ${
+                            file.status === 'completed' ? 'text-green-400' :
+                            file.status === 'failed' ? 'text-red-400' :
+                            'text-blue-400'
+                          }`}>
+                            {file.status}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeFile(file.id)}
+                            className="p-0.5 rounded hover:bg-white/10"
+                          >
+                            <X className="w-3.5 h-3.5 text-white/60" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                
                 <div className="flex text-start gap-3 p-4 py-2">
+                  <input
+                    type="file"
+                    id="file-upload-initial"
+                    multiple
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
+                  <label
+                    htmlFor="file-upload-initial"
+                    className="flex place-self-end h-10 w-10 items-center justify-center rounded-full hover:bg-primary/20 transition-all cursor-pointer group hover:scale-110 active:scale-95"
+                  >
+                    <Plus className="h-6 w-6 font-bold text-white/70 group-hover:text-primary transition-all group-hover:rotate-90" />
+                  </label>
                   <div
                     ref={inputRef}
                     contentEditable={!isLoading}
@@ -174,7 +354,7 @@ export default function ChatInterface() {
                   <button
                     type="submit"
                     disabled={!input.trim() || isLoading}
-                    className="flex place-self-end h-10 w-10 items-center justify-center rounded-full bg-primary text-white transition-all hover:scale-105 hover:bg-primary/90 active:scale-95 disabled:bg-primary/30 disabled:hover:scale-100"
+                    className="flex place-self-end h-10 w-10 items-center justify-center rounded-full bg-primary text-white transition-all hover:scale-110 hover:shadow-lg hover:shadow-primary/50 active:scale-95 disabled:bg-primary/30 disabled:hover:scale-100 disabled:shadow-none"
                   >
                     {isLoading ? (
                       <Loader2 className="h-5 w-5 animate-spin" />
@@ -213,6 +393,9 @@ export default function ChatInterface() {
                         </span>
                       )}
                     </div>
+                    {message.role === "assistant" && message.sources && message.sources.length > 0 && (
+                      <SourceCitation sources={message.sources} />
+                    )}
                   </div>
                 </div>
               </div>
@@ -235,7 +418,53 @@ export default function ChatInterface() {
           onSubmit={handleSubmit}
           className="rounded-2xl pb-2 border border-white/10 bg-white/5 backdrop-blur-md shadow-lg transition focus-within:border-info/20 focus-within:shadow-primary/10"
         >
+          {/* Uploaded Files Display */}
+          {uploadedFiles.length > 0 && (
+            <div className="px-4 pt-3 pb-2 border-b border-white/10 space-y-1">
+              {uploadedFiles.map((file) => {
+                const FileIcon = getFileIcon(file.name);
+                return (
+                  <div
+                    key={file.id}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white/5 text-sm"
+                  >
+                    <FileIcon className="w-3.5 h-3.5 text-white/60 shrink-0" />
+                    <span className="flex-1 text-white/80 truncate text-xs">{file.name}</span>
+                    <span className={`text-xs ${
+                      file.status === 'completed' ? 'text-green-400' :
+                      file.status === 'failed' ? 'text-red-400' :
+                      'text-blue-400'
+                    }`}>
+                      {file.status}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(file.id)}
+                      className="p-0.5 rounded hover:bg-white/10"
+                    >
+                      <X className="w-3.5 h-3.5 text-white/60" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          
           <div className="flex text-start gap-3 p-4 py-2">
+            <input
+              type="file"
+              id="file-upload-ongoing"
+              multiple
+              accept=".pdf,.jpg,.jpeg,.png"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+            <label
+              htmlFor="file-upload-ongoing"
+              className="flex place-self-end h-10 w-10 items-center justify-center rounded-full hover:bg-primary/20 transition-all cursor-pointer group hover:scale-110 active:scale-95"
+            >
+              <Paperclip className="h-5 w-5 text-white/70 group-hover:text-primary transition-all group-hover:rotate-12" />
+            </label>
             <div
               ref={inputRef}
               contentEditable={!isLoading}
@@ -249,7 +478,7 @@ export default function ChatInterface() {
             <button
               type="submit"
               disabled={!input.trim() || isLoading}
-              className="flex place-self-end h-10 w-10 items-center justify-center rounded-full bg-primary text-white transition-all hover:scale-105 hover:bg-primary/90 active:scale-95 disabled:bg-primary/30 disabled:cursor-not-allowed disabled:hover:scale-100"
+              className="flex place-self-end h-10 w-10 items-center justify-center rounded-full bg-primary text-white transition-all hover:scale-110 hover:shadow-lg hover:shadow-primary/50 active:scale-95 disabled:bg-primary/30 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
             >
               {isLoading ? (
                 <Loader2 className="h-5 w-5 animate-spin" />

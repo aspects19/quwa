@@ -32,7 +32,8 @@ export default function FileUpload() {
       return 'Only PDF and image files (JPG, PNG) are allowed';
     }
 
-    if (!ALLOWED_TYPES.includes(file.type) && !file.type.startsWith('image/')) {
+    // Check file.type exists before calling startsWith
+    if (!ALLOWED_TYPES.includes(file.type) && (!file.type || !file.type.startsWith('image/'))) {
       return 'Invalid file type';
     }
 

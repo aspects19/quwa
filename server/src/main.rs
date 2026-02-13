@@ -64,9 +64,10 @@ async fn main() -> Result<()> {
     tracing::info!("Initializing Gemini client...");
     let gemini_client = Arc::new(rig::providers::gemini::Client::new(&gemini_api_key)?);
 
-    // Initialize processors
-    let pdf_processor = Arc::new(processing::PdfProcessor::new(&gemini_api_key)?);
-    let image_processor = Arc::new(processing::ImageProcessor::new(&gemini_api_key)?);
+    // Initialize processors with local embeddings
+    let pdf_processor = Arc::new(processing::PdfProcessor::new(embedding_service.clone())?);
+    let image_processor = Arc::new(processing::ImageProcessor::new(embedding_service.clone())?);
+
 
     // Create request counter for API tracking
     let request_counter = request_counter::RequestCounter::new();

@@ -138,19 +138,21 @@ pub async fn search_embeddings(
     pool: &PgPool,
     query_embedding: Vec<f32>,
     limit: i64,
-) -> Result<Vec<(String, f32, String, String, Option<String>, Option<String>)>> {
+) -> Result<Vec<(String, f64, String, String, Option<String>, Option<String>)>> {
     // Use cosine distance operator (<=>)
     // Lower distance = higher similarity
     // We convert to similarity score (1 - distance) for consistency
-    let results = sqlx::query_as::<_, (String, f32, String, String, Option<String>, Option<String>)>(
+    // IMPORTANT: Cast the parameter to vector type using ::vector
+    // PostgreSQL returns FLOAT8 (f64) for distance calculations
+    let results = sqlx::query_as::<_, (String, f64, String, String, Option<String>, Option<String>)>(
         "SELECT text, 
-                1 - (embedding <=> $1) as similarity,
+                1 - (embedding <=> $1::vector) as similarity,
                 source_type, 
                 source_id, 
                 file_name, 
                 orpha_code
          FROM embeddings
-         ORDER BY embedding <=> $1
+         ORDER BY embedding <=> $1::vector
          LIMIT $2"
     )
     .bind(&query_embedding)

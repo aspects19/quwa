@@ -6,7 +6,7 @@ use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use rig::completion::Prompt;
-use rig::client::{CompletionClient, EmbeddingsClient};
+use rig::client::{CompletionClient};
 
 use crate::{AppState, auth::AppwriteClaims, rag::context_strategy};
 
@@ -286,68 +286,4 @@ fn build_rag_context(results: &[(String, f32, crate::rag::vector_store::Document
         })
         .collect::<Vec<_>>()
         .join("\n---\n")
-}
-
-// Generate query embedding using Gemini with retry logic
-async fn generate_query_embedding(
-    gemini_client: &rig::providers::gemini::Client,
-    text: &str,
-    counter: Option<&crate::request_counter::RequestCounter>,
-) -> Result<Vec<f32>, anyhow::Error> {
-    const MAX_RETRIES: u32 = 3;
-    const BASE_DELAY_MS: u64 = 500;
-    
-    for attempt in 0..MAX_RETRIES {
-        match generate_query_embedding_once(gemini_client, text, counter).await {
-            Ok(vec) => return Ok(vec),
-            Err(e) => {
-                let error_msg = e.to_string();
-                
-                // Check if it's a rate limit error
-                if error_msg.contains("RESOURCE_EXHAUSTED") || error_msg.contains("429") {
-                    if attempt < MAX_RETRIES - 1 {
-                        let delay = BASE_DELAY_MS * 2_u64.pow(attempt);
-                        tracing::warn!(
-                            "Rate limit hit, retrying in {}ms (attempt {}/{})",
-                            delay, attempt + 1, MAX_RETRIES
-                        );
-                        tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-                        continue;
-                    }
-                }
-                
-                // Not a rate limit or out of retries
-                return Err(e);
-            }
-        }
-    }
-    
-    Err(anyhow::anyhow!("Failed after {} retries", MAX_RETRIES))
-}
-
-// Single attempt at embedding generation
-async fn generate_query_embedding_once(
-    gemini_client: &rig::providers::gemini::Client,
-    text: &str,
-    counter: Option<&crate::request_counter::RequestCounter>,
-) -> Result<Vec<f32>, anyhow::Error> {
-    // Log the embedding request
-    if let Some(c) = counter {
-        c.log_embedding_request(&format!("Chat query: {}", text.chars().take(40).collect::<String>()));
-    }
-    
-    // Use Gemini's text-embedding-004 model
-    let embeddings = gemini_client
-        .embeddings("text-embedding-004")
-        .document(text)?
-        .build()
-        .await?;
-    let (_, embedding_data) = embeddings
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No embedding returned"))?;
-        
-        // Get the vec from the embedding (convert from f64 to f32)
-        let embedding_vec: Vec<f32> = embedding_data.first().vec.iter().map(|v| *v as f32).collect();
-    
-    Ok(embedding_vec)
 }

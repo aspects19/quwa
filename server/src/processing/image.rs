@@ -1,61 +1,41 @@
 use anyhow::{Result, Context};
 use bytes::Bytes;
-use rig::providers::gemini;
-use base64::{Engine as _, engine::general_purpose};
+use std::sync::Arc;
+use crate::embeddings::LocalEmbeddingService;
 
 pub struct ImageProcessor {
-    gemini_client: gemini::Client,
+    embedding_service: Arc<LocalEmbeddingService>,
 }
 
 impl ImageProcessor {
-    pub fn new(api_key: &str) -> Result<Self> {
-        let gemini_client = gemini::Client::new(api_key)?;
-        Ok(Self { gemini_client })
+    pub fn new(embedding_service: Arc<LocalEmbeddingService>) -> Result<Self> {
+        Ok(Self { embedding_service })
     }
     
     pub async fn process_image(&self, file_data: Bytes) -> Result<(String, Vec<f32>)> {
-        // Generate clinical description using Gemini Vision
+        // Generate clinical description (placeholder for now - needs Gemini Vision API)
         let description = self.generate_clinical_description(&file_data).await?;
         
-        // Generate embedding from description
-        let embedding = self.generate_embedding(&description).await?;
+        // Generate embedding from description using local FastEmbed
+        let embedding = self.embedding_service.embed_text(&description).await?;
         
         Ok((description, embedding))
     }
     
-    async fn generate_clinical_description(&self, image_data: &Bytes) -> Result<String> {
-        // Encode image to base64
-        let base64_image = general_purpose::STANDARD.encode(image_data);
-        
-        // Prompt for medical image analysis
-        let prompt = "You are a medical imaging expert. Analyze this medical image and provide a detailed clinical description including:\n\
-                      1. Type of imaging modality (X-ray, CT, MRI, ultrasound, photograph, etc.)\n\
-                      2. Anatomical region shown\n\
-                      3. Notable findings or abnormalities\n\
-                      4. Potential diagnostic significance\n\
-                      5. Any visible pathological features\n\n\
-                      Provide a structured, clinical description suitable for medical documentation.";
-        
-        // TODO: Implement actual Rig Gemini Vision API call
-        // This is a placeholder - needs proper Rig multimodal implementation
-        tracing::warn!("Using mock image description - implement actual Rig Vision API");
+    async fn generate_clinical_description(&self, _image_data: &Bytes) -> Result<String> {
+        // TODO: Implement actual Gemini Vision API call for image analysis
+        // For now, return a placeholder description
+        tracing::warn!("Using mock image description - implement actual Gemini Vision API");
         
         let mock_description = format!(
             "Medical Image Analysis:\n\
              Modality: Unknown (requires Vision API)\n\
              Region: Unknown\n\
              Findings: Image processing pending\n\
-             Note: This is a placeholder. Implement Gemini Vision API via Rig."
+             Note: This is a placeholder. Implement Gemini Vision API for actual image analysis."
         );
         
         Ok(mock_description)
-    }
-    
-    async fn generate_embedding(&self, _text: &str) -> Result<Vec<f32>> {
-        // TODO: Implement actual Rig embedding generation
-        // This is a placeholder
-        tracing::warn!("Using mock embedding - implement actual Rig embedding API");
-        Ok(vec![0.0; 768]) // Mock 768-dimensional embedding
     }
     
     /// Validate that the image can be loaded

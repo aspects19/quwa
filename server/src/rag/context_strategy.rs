@@ -1,9 +1,8 @@
 
 use chrono::{DateTime, Utc};
 
-const GEMINI_CONTEXT_WINDOW: usize = 1_000_000; // 1M tokens
-const LARGE_DOC_THRESHOLD: usize = 50_000; // characters
 const CRITICAL_FILE_TYPES: &[&str] = &["pdf", "lab_report"];
+
 
 #[derive(Debug, Clone)]
 pub struct ContextStrategy {

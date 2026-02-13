@@ -1,27 +1,26 @@
 use anyhow::{Result, Context};
 use bytes::Bytes;
-use rig::providers::gemini;
-use rig::client::EmbeddingsClient;
+use std::sync::Arc;
+use crate::embeddings::LocalEmbeddingService;
 
 pub struct PdfProcessor {
-    gemini_client: gemini::Client,
+    embedding_service: Arc<LocalEmbeddingService>,
 }
 
 impl PdfProcessor {
-    pub fn new(api_key: &str) -> Result<Self> {
-        let gemini_client = gemini::Client::new(api_key)?;
-        Ok(Self { gemini_client })
+    pub fn new(embedding_service: Arc<LocalEmbeddingService>) -> Result<Self> {
+        Ok(Self { embedding_service })
     }
     
-    pub async fn process_pdf(&self, file_data: Bytes, counter: Option<&crate::request_counter::RequestCounter>) -> Result<Vec<(String, Vec<f32>)>> {
+    pub async fn process_pdf(&self, file_data: Bytes, _counter: Option<&crate::request_counter::RequestCounter>) -> Result<Vec<(String, Vec<f32>)>> {
         // Extract text from PDF
         let text = self.extract_text(file_data)?;
         
         // Chunk text
         let chunks = self.chunk_text(&text)?;
         
-        // Generate embeddings
-        let embeddings = self.generate_embeddings(chunks, counter).await?;
+        // Generate embeddings using local FastEmbed
+        let embeddings = self.generate_embeddings(chunks).await?;
         
         Ok(embeddings)
     }
@@ -80,50 +79,17 @@ impl PdfProcessor {
         Ok(chunks)
     }
     
-    async fn generate_embeddings(&self, chunks: Vec<String>, counter: Option<&crate::request_counter::RequestCounter>) -> Result<Vec<(String, Vec<f32>)>> {
-        let mut results = Vec::new();
+    async fn generate_embeddings(&self, chunks: Vec<String>) -> Result<Vec<(String, Vec<f32>)>> {
+        tracing::info!("Generating embeddings for {} PDF chunks using local FastEmbed", chunks.len());
         
-        // Process chunks with progress logging
-        for (idx, chunk) in chunks.iter().enumerate() {
-            tracing::debug!("Generating embedding for chunk {}/{}", idx + 1, chunks.len());
-            
-            let context = format!("PDF chunk {}/{}", idx + 1, chunks.len());
-            let embedding = self.generate_single_embedding(chunk, counter, &context).await?;
-            results.push((chunk.clone(), embedding));
-            
-            // Add delay to avoid rate limiting (5 seconds between requests)
-            // This keeps us under Gemini's free tier limit of ~15 requests/minute
-            if idx < chunks.len() - 1 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
-            }
-        }
+        // Use local embedding service (batch processing, fast!)
+        let embeddings = self.embedding_service.embed_batch(chunks.clone()).await?;
+        
+        // Combine chunks with their embeddings
+        let results: Vec<(String, Vec<f32>)> = chunks.into_iter()
+            .zip(embeddings.into_iter())
+            .collect();
         
         Ok(results)
-    }
-    
-    async fn generate_single_embedding(&self, text: &str, counter: Option<&crate::request_counter::RequestCounter>, context: &str) -> Result<Vec<f32>> {
-        // Log request if counter is provided
-        if let Some(c) = counter {
-            c.log_embedding_request(context);
-        }
-        
-        // Use Gemini's text-embedding-004 model
-        let embeddings = self.gemini_client
-            .embeddings("text-embedding-004")
-            .document(text)
-            .context("Failed to create embedding document")?
-            .build()
-            .await
-            .context("Failed to generate embedding")?;
-        
-        // Extract the first embedding from the result (tuple of (text, embeddings))
-        let (_, embedding_data) = embeddings
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No embedding returned"))?;
-        
-        // Get the vec from the embedding (convert from f64 to f32)
-        let embedding_vec: Vec<f32> = embedding_data.first().vec.iter().map(|v| *v as f32).collect();
-        
-        Ok(embedding_vec)
     }
 }

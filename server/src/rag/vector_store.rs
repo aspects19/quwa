@@ -13,19 +13,17 @@ pub struct DocumentMetadata {
 
 pub struct RagVectorStore {
     pool: PgPool,
-    embedding_service: std::sync::Arc<LocalEmbeddingService>,
 }
 
 impl RagVectorStore {
     pub async fn new(
         pool: &PgPool,
-        embedding_service: std::sync::Arc<LocalEmbeddingService>,
+        _embedding_service: std::sync::Arc<LocalEmbeddingService>,
     ) -> Result<Self> {
         tracing::info!("Initialized PostgreSQL vector store with pgvector");
         
         Ok(Self {
             pool: pool.clone(),
-            embedding_service,
         })
     }
     
@@ -64,6 +62,7 @@ impl RagVectorStore {
         .await?;
         
         // Convert database results to expected format
+        // Cast f64 similarity scores to f32 for consistency
         let formatted_results = results
             .into_iter()
             .map(|(text, similarity, source_type, source_id, file_name, orpha_code)| {
@@ -73,7 +72,7 @@ impl RagVectorStore {
                     file_name,
                     orpha_code,
                 };
-                (text, similarity, metadata)
+                (text, similarity as f32, metadata)
             })
             .collect();
         

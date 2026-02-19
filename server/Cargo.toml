@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "migrate", "chrono", "uuid"] }
 
 # AI Framework
-rig-core = "0.27.0"
+# (OpenAI integration is done via reqwest HTTP client)
 
 # Authentication
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }

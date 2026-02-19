@@ -28,7 +28,7 @@ impl RequestCounter {
         let elapsed = self.get_elapsed_seconds();
         
         tracing::info!(
-            "🔢 GEMINI API REQUEST #{} | Type: EMBEDDING | Context: {} | Elapsed: {}s | Total Embeddings: {} | Total Chat: {} | Rate: {:.2} req/min",
+            "🔢 LLM API REQUEST #{} | Type: EMBEDDING | Context: {} | Elapsed: {}s | Total Embeddings: {} | Total Chat: {} | Rate: {:.2} req/min",
             self.total_requests(),
             context,
             elapsed,
@@ -45,7 +45,7 @@ impl RequestCounter {
         let elapsed = self.get_elapsed_seconds();
         
         tracing::info!(
-            "🔢 GEMINI API REQUEST #{} | Type: CHAT | Context: {} | Elapsed: {}s | Total Embeddings: {} | Total Chat: {} | Rate: {:.2} req/min",
+            "🔢 LLM API REQUEST #{} | Type: CHAT | Context: {} | Elapsed: {}s | Total Embeddings: {} | Total Chat: {} | Rate: {:.2} req/min",
             self.total_requests(),
             context,
             elapsed,
@@ -88,7 +88,7 @@ impl RequestCounter {
     
     pub fn print_summary(&self) {
         tracing::info!(
-            "📊 GEMINI API SUMMARY | Total: {} requests | Embeddings: {} | Chat: {} | Elapsed: {}s | Avg Rate: {:.2} req/min",
+            "📊 LLM API SUMMARY | Total: {} requests | Embeddings: {} | Chat: {} | Elapsed: {}s | Avg Rate: {:.2} req/min",
             self.total_requests(),
             self.get_embedding_count(),
             self.get_chat_count(),

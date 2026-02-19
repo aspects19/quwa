@@ -23,7 +23,9 @@ pub struct AppState {
     pub vector_store: Arc<rag::vector_store::RagVectorStore>,
     pub pdf_processor: Arc<processing::PdfProcessor>,
     pub image_processor: Arc<processing::ImageProcessor>,
-    pub gemini_client: Arc<rig::providers::gemini::Client>,
+    pub openai_http_client: reqwest::Client,
+    pub openai_api_key: Arc<String>,
+    pub openai_model: Arc<String>,
     pub embedding_service: Arc<embeddings::LocalEmbeddingService>,
     pub request_counter: request_counter::RequestCounter,
 }
@@ -38,9 +40,11 @@ async fn main() -> Result<()> {
     // Get environment variables
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL not set, Set it in .env file");
-    
-    let gemini_api_key = std::env::var("GEMINI_API_KEY")
-        .expect("GEMINI_API_KEY not set, Set it in .env file");
+
+    let openai_api_key = std::env::var("OPENAI_API_KEY")
+        .expect("OPENAI_API_KEY not set, Set it in .env file");
+    let openai_model = std::env::var("OPENAI_MODEL")
+        .unwrap_or_else(|_| "gpt-4o-mini".to_string());
 
     // Initialize PostgreSQL
     tracing::info!("Connecting to PostgreSQL...");
@@ -60,14 +64,13 @@ async fn main() -> Result<()> {
     let vector_count = vector_store.count().await;
     tracing::info!("Vector store initialized ({} existing documents)", vector_count);
 
-    // Initialize shared Gemini client
-    tracing::info!("Initializing Gemini client...");
-    let gemini_client = Arc::new(rig::providers::gemini::Client::new(&gemini_api_key)?);
+    // Initialize OpenAI client settings
+    tracing::info!("Initializing OpenAI HTTP client with model {}...", openai_model);
+    let openai_http_client = reqwest::Client::new();
 
     // Initialize processors with local embeddings
     let pdf_processor = Arc::new(processing::PdfProcessor::new(embedding_service.clone())?);
     let image_processor = Arc::new(processing::ImageProcessor::new(embedding_service.clone())?);
-
 
     // Create request counter for API tracking
     let request_counter = request_counter::RequestCounter::new();
@@ -79,7 +82,9 @@ async fn main() -> Result<()> {
         vector_store: vector_store.clone(),
         pdf_processor,
         image_processor,
-        gemini_client,
+        openai_http_client,
+        openai_api_key: Arc::new(openai_api_key),
+        openai_model: Arc::new(openai_model),
         embedding_service: embedding_service.clone(),
         request_counter,
     };
@@ -88,7 +93,7 @@ async fn main() -> Result<()> {
     let load_orphanet = std::env::var("LOAD_ORPHANET")
         .unwrap_or_else(|_| "false".to_string())
         .to_lowercase() == "true";
-    
+
     if load_orphanet {
         tracing::info!("Loading Orphanet dataset...");
         match orphanet_loader::load_orphanet_from_env(&vector_store, &embedding_service).await {
@@ -115,7 +120,7 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:3000").await?;
     tracing::info!("Server listening on {}", listener.local_addr()?);
     println!("Server running at http://localhost:3000");
-    
+
     axum::serve(listener, app).await?;
 
     Ok(())

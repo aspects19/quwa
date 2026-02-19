@@ -191,7 +191,7 @@ export default function ChatInterface() {
       sseSourceRef.current = source;
       const assistantMessageId = (Date.now() + 1).toString();
       let accumulatedContent = "";
-      let currentThinkingStep = "";
+      const thinkingSteps: string[] = [];
       //prevents a false error that is returned after the done state is returned
       let isDone = false;
       
@@ -206,12 +206,17 @@ export default function ChatInterface() {
       
       source.addEventListener('thinking', (e: any) => {
         const data = JSON.parse(e.data);
-        currentThinkingStep = data.step;
+        const nextStep = String(data.step || '').trim();
+        if (!nextStep) return;
+
+        if (thinkingSteps[thinkingSteps.length - 1] !== nextStep) {
+          thinkingSteps.push(nextStep);
+        }
         
         setMessages((prev) => 
           prev.map((msg) => 
             msg.id === assistantMessageId 
-              ? { ...msg, thinking: [currentThinkingStep] }
+              ? { ...msg, thinking: [...thinkingSteps] }
               : msg
           )
         );

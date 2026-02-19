@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let gemini_api_key = std::env::var("GEMINI_API_KEY")
         .expect("GEMINI_API_KEY not set, Set it in .env file");
     let gemini_model = std::env::var("GEMINI_MODEL")
-        .unwrap_or_else(|_| "gemini-1.5-flash".to_string());
+        .unwrap_or_else(|_| "gemini-2.0-flash".to_string());
 
     // Initialize PostgreSQL
     tracing::info!("Connecting to PostgreSQL...");

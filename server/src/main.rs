@@ -115,6 +115,7 @@ async fn main() -> Result<()> {
         .route("/api/protected", get(auth::protected))
         .route("/api/chat", post(chat_handler))
         .route("/api/upload", post(media_ingestion::handle_file_upload))
+        .route("/api/vector/inspect", post(rag::inspect::inspect_vectors))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:3000").await?;

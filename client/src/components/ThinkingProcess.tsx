@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Brain, ChevronDown, ChevronUp } from 'lucide-react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 
 interface ThinkingProcessProps {
   steps: string[]
@@ -11,43 +11,41 @@ export default function ThinkingProcess({ steps }: ThinkingProcessProps) {
   if (steps.length === 0) return null
   
   return (
-    <div className="ml-4 mb-4 card border-l-4 border-accent-500/50 animate-slide-in">
+    <div className="ml-10 mb-3 rounded-lg border border-white/5 bg-white/5 px-3 py-2 text-xs text-white/50 backdrop-blur-sm animate-slide-in">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className="flex items-center justify-between w-full text-left group"
       >
         <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-lg bg-accent-500/10">
-            <Brain className="w-4 h-4 text-accent-400" />
-          </div>
-          <span className="text-sm font-semibold text-accent-300">
-            Thinking Process
+          <span className="inline-block h-2 w-2 rounded-full bg-white/40 animate-pulse" />
+          <span className="text-[11px] uppercase tracking-wider text-white/40">
+            Thinking
           </span>
           {steps.length > 1 && (
-            <span className="text-xs text-dark-text-muted">
+            <span className="text-[11px] text-white/30">
               ({steps.length} steps)
             </span>
           )}
         </div>
         {isExpanded ? (
-          <ChevronUp className="w-4 h-4 text-dark-text-muted group-hover:text-accent-400 transition-colors" />
+          <ChevronUp className="w-4 h-4 text-white/30 group-hover:text-white/60 transition-colors" />
         ) : (
-          <ChevronDown className="w-4 h-4 text-dark-text-muted group-hover:text-accent-400 transition-colors" />
+          <ChevronDown className="w-4 h-4 text-white/30 group-hover:text-white/60 transition-colors" />
         )}
       </button>
       
       {isExpanded && (
-        <div className="mt-4 space-y-2">
+        <div className="mt-2 space-y-1.5">
           {steps.map((step, index) => (
             <div
               key={index}
-              className="flex items-start gap-3 p-3 rounded-lg bg-dark-surface-elevated border border-white/5 animate-fade-in"
+              className="flex items-start gap-2 rounded-md bg-white/5 px-2 py-1.5 text-white/50 animate-fade-in"
               style={{ animationDelay: `${index * 0.1}s` }}
             >
-              <div className="shrink-0 w-6 h-6 rounded-full bg-accent-500/20 flex items-center justify-center text-xs font-bold text-accent-400">
-                {index + 1}
+              <div className="shrink-0 text-[10px] text-white/30 pt-0.5">
+                {index + 1}.
               </div>
-              <p className="text-sm text-dark-text-muted pt-0.5">
+              <p className="text-[12px] leading-snug">
                 {step}
               </p>
             </div>

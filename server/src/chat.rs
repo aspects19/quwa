@@ -96,6 +96,30 @@ struct OpenAiStreamDelta {
     content: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct TopMatch {
+    label: Option<String>,
+    similarity: Option<f32>,
+    orpha_code: Option<String>,
+}
+
+impl TopMatch {
+    fn to_prompt_line(&self) -> String {
+        match (&self.label, self.similarity, &self.orpha_code) {
+            (Some(label), Some(sim), Some(code)) => {
+                format!("TOP VECTOR MATCH: {} (Orpha: {}) with similarity {:.2}.", label, code, sim)
+            }
+            (Some(label), Some(sim), None) => {
+                format!("TOP VECTOR MATCH: {} with similarity {:.2}.", label, sim)
+            }
+            (Some(label), None, _) => {
+                format!("TOP VECTOR MATCH: {}.", label)
+            }
+            _ => "TOP VECTOR MATCH: none.".to_string(),
+        }
+    }
+}
+
 pub async fn chat_handler(
     State(state): State<AppState>,
     claims: AppwriteClaims,
@@ -186,6 +210,16 @@ pub async fn chat_handler(
             })
             .unwrap());
 
+        let top_match = extract_top_condition(&rag_results);
+        if let Some(top_match_label) = top_match.label.clone() {
+            yield Ok::<Event, Infallible>(Event::default()
+                .event("thinking")
+                .json_data(ThinkingData {
+                    step: format!("Top match: {}", top_match_label)
+                })
+                .unwrap());
+        }
+
         let context = build_rag_context(&rag_results);
 
         yield Ok::<Event, Infallible>(Event::default()
@@ -195,15 +229,17 @@ pub async fn chat_handler(
             })
             .unwrap());
 
+        let top_match_note = top_match.to_prompt_line();
+
         let enhanced_prompt = if !context.is_empty() {
             format!(
-                "RELEVANT MEDICAL KNOWLEDGE:\n{}\n\nPATIENT QUERY:\n{}",
-                context, user_message
+                "RELEVANT MEDICAL KNOWLEDGE:\n{}\n\n{}\n\nPATIENT QUERY:\n{}",
+                context, top_match_note, user_message
             )
         } else {
             format!(
-                "PATIENT QUERY:\n{}\n\nNo specific retrieved records were found for this query.",
-                user_message
+                "PATIENT QUERY:\n{}\n\nNo specific retrieved records were found for this query.\n\n{}",
+                user_message, top_match_note
             )
         };
 
@@ -388,7 +424,7 @@ async fn call_openai_thinking(
         "additionalProperties": false
     });
 
-    let system_prompt = "You are a medical assistant for a hackathon demo. Return concise UI-friendly reasoning as thinking_steps (3-6 short lines, no hidden chain-of-thought details).";
+    let system_prompt = "You are a medical assistant for a hackathon demo. Return concise UI-friendly reasoning as thinking_steps (3-6 short lines). Do not include hidden chain-of-thought details.";
 
     let req_body = OpenAiChatRequest {
         model: model.to_string(),
@@ -455,7 +491,7 @@ async fn start_openai_answer_stream(
         messages: vec![
             OpenAiMessage {
                 role: "system".to_string(),
-                content: "You are a medical assistant for a hackathon demo. Give practical, clear guidance and mention this is not a diagnosis.".to_string(),
+                content: "You are a medical assistant for a hackathon demo. Use the top vector match if provided. If the top vector match is none, say you cannot identify a likely condition and provide general next steps. Output format:\nMost likely condition: <single condition name> (Orpha code if provided)\nReasons:\n- <short reason>\n- <short reason>\nNext steps:\n- <action>\n- <action>\nInclude a brief disclaimer that this is not a diagnosis. Do not list multiple conditions.".to_string(),
             },
             OpenAiMessage {
                 role: "user".to_string(),
@@ -510,4 +546,48 @@ fn build_rag_context(results: &[(String, f32, crate::rag::vector_store::Document
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn extract_top_condition(
+    results: &[(String, f32, crate::rag::vector_store::DocumentMetadata)],
+) -> TopMatch {
+    let mut top_match = TopMatch::default();
+    let Some((text, similarity, metadata)) = results.first() else {
+        return top_match;
+    };
+
+    if let Some((name, orpha_code)) = parse_condition_from_text(text) {
+        top_match.label = Some(name);
+        top_match.orpha_code = orpha_code.or(metadata.orpha_code.clone());
+    } else if let Some(orpha_code) = metadata.orpha_code.clone() {
+        top_match.label = Some(format!("Orpha {}", orpha_code));
+        top_match.orpha_code = Some(orpha_code);
+    }
+
+    top_match.similarity = Some(*similarity);
+    top_match
+}
+
+fn parse_condition_from_text(text: &str) -> Option<(String, Option<String>)> {
+    let first_line = text.lines().next()?.trim();
+    if !first_line.starts_with("Disease:") {
+        return None;
+    }
+
+    let rest = first_line.trim_start_matches("Disease:").trim();
+    if rest.is_empty() {
+        return None;
+    }
+
+    if let Some(orpha_idx) = rest.find("(Orpha:") {
+        let name = rest[..orpha_idx].trim().to_string();
+        let tail = &rest[orpha_idx + "(Orpha:".len()..];
+        let code = tail.split(')').next().map(|s| s.trim().to_string());
+        if name.is_empty() {
+            return None;
+        }
+        return Some((name, code));
+    }
+
+    Some((rest.to_string(), None))
 }

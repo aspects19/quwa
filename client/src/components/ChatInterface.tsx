@@ -370,7 +370,7 @@ export default function ChatInterface() {
                       onScroll={handleInputScroll}
                       onKeyDown={handleKeyDown}
                       disabled={isLoading}
-                      className="absolute inset-0 h-full max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent text-transparent caret-white outline-none selection:bg-primary/30"
+                      className="absolute inset-0 h-full max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent text-base leading-relaxed text-transparent caret-white outline-none selection:bg-primary/30"
                     />
                   </div>
                   <button
@@ -508,7 +508,7 @@ export default function ChatInterface() {
                 onScroll={handleInputScroll}
                 onKeyDown={handleKeyDown}
                 disabled={isLoading}
-                className="absolute inset-0 h-full max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent text-transparent caret-white outline-none selection:bg-primary/30"
+                className="absolute inset-0 h-full max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent text-base leading-relaxed text-transparent caret-white outline-none selection:bg-primary/30"
               />
             </div>
             <button

@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from "react";
 import { Send, Loader2, FileText, Image as ImageIcon, X, Paperclip, Plus } from "lucide-react";
 import ThinkingProcess from "./ThinkingProcess";
 import SourceCitation from "./SourceCitation";
+import MarkdownText from "./MarkdownText";
 import { getValidJWT } from "@/lib/appwrite";
 import {SSE} from 'sse.js';
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
@@ -29,7 +30,8 @@ export default function ChatInterface() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const inputRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputPreviewRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sseSourceRef = useRef<SSE | null>(null);
 
@@ -44,11 +46,15 @@ export default function ChatInterface() {
       }
     };
   }, []);
-  const handleInput = () => {
-    if (!inputRef.current) return;
-    setInput(inputRef.current.innerText);
+  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
   };
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+  const handleInputScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
+    if (!inputPreviewRef.current) return;
+    inputPreviewRef.current.scrollTop = e.currentTarget.scrollTop;
+    inputPreviewRef.current.scrollLeft = e.currentTarget.scrollLeft;
+  };
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e as any);
@@ -172,9 +178,6 @@ export default function ChatInterface() {
     const messageContent = input.trim();
     setInput("");
     setIsLoading(true);
-    if (inputRef.current) {
-      inputRef.current.innerHTML = "";
-    }
     try {
       const jwtToken = await getValidJWT();
       const source = new SSE(`${BACKEND_URL}/api/chat`, {
@@ -347,15 +350,29 @@ export default function ChatInterface() {
                     <Plus className="h-6 w-6 font-bold text-white/70 group-hover:text-primary transition-all group-hover:rotate-90" />
                   </label>
                   <div
-                    ref={inputRef}
-                    contentEditable={!isLoading}
-                    role="textbox"
-                    aria-multiline="true"
-                    data-placeholder="Describe patient symptoms or clinical observations..."
-                    className="flex-1 min-h-6 max-h-[40vh] overflow-y-auto bg-transparent text-base leading-relaxed text-white outline-none whitespace-pre-wrap wrap-break-word empty:before:text-white/40 empty:before:pointer-events-none selection:bg-primary/30"
-                    onInput={handleInput}
-                    onKeyDown={handleKeyDown}
-                  />
+                    className="relative flex-1 min-h-6 max-h-[40vh] overflow-hidden"
+                  >
+                    <div
+                      ref={inputPreviewRef}
+                      aria-hidden="true"
+                      className="max-h-[40vh] overflow-y-auto bg-transparent text-base leading-relaxed text-white whitespace-pre-wrap break-words"
+                    >
+                      {input.trim() ? (
+                        <MarkdownText content={input} mode="lists" />
+                      ) : (
+                        <span className="text-white/40">Describe patient symptoms or clinical observations...</span>
+                      )}
+                    </div>
+                    <textarea
+                      ref={inputRef}
+                      value={input}
+                      onChange={handleInput}
+                      onScroll={handleInputScroll}
+                      onKeyDown={handleKeyDown}
+                      disabled={isLoading}
+                      className="absolute inset-0 h-full max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent text-transparent caret-white outline-none selection:bg-primary/30"
+                    />
+                  </div>
                   <button
                     type="submit"
                     disabled={!input.trim() || isLoading}
@@ -388,8 +405,8 @@ export default function ChatInterface() {
                     {message.role === "assistant" && (
                       <div className="text-xs font-medium text-white/60 mb-2">AI Assistant</div>
                     )}
-                    <div className="text-base leading-relaxed whitespace-pre-wrap">
-                      {message.content}
+                    <div className="text-base leading-relaxed">
+                      <MarkdownText content={message.content} />
                       {message.role === "assistant" && !message.content && isLoading && (
                         <span className="inline-flex items-center gap-1 text-white/50">
                           <span className="animate-pulse">●</span>
@@ -471,15 +488,29 @@ export default function ChatInterface() {
               <Paperclip className="h-5 w-5 text-white/70 group-hover:text-primary transition-all group-hover:rotate-12" />
             </label>
             <div
-              ref={inputRef}
-              contentEditable={!isLoading}
-              role="textbox"
-              aria-multiline="true"
-              data-placeholder="Continue the conversation..."
-              className="flex-1 min-h-6 max-h-[40vh] overflow-y-auto bg-transparent text-base leading-relaxed text-white outline-none whitespace-pre-wrap wrap-break-word empty:before:text-white/40 empty:before:pointer-events-none selection:bg-primary/30"
-              onInput={handleInput}
-              onKeyDown={handleKeyDown}
-            />
+              className="relative flex-1 min-h-6 max-h-[40vh] overflow-hidden"
+            >
+              <div
+                ref={inputPreviewRef}
+                aria-hidden="true"
+                className="max-h-[40vh] overflow-y-auto bg-transparent text-base leading-relaxed text-white whitespace-pre-wrap break-words"
+              >
+                {input.trim() ? (
+                  <MarkdownText content={input} mode="lists" />
+                ) : (
+                  <span className="text-white/40">Continue the conversation...</span>
+                )}
+              </div>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={handleInput}
+                onScroll={handleInputScroll}
+                onKeyDown={handleKeyDown}
+                disabled={isLoading}
+                className="absolute inset-0 h-full max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent text-transparent caret-white outline-none selection:bg-primary/30"
+              />
+            </div>
             <button
               type="submit"
               disabled={!input.trim() || isLoading}

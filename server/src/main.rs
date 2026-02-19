@@ -23,9 +23,9 @@ pub struct AppState {
     pub vector_store: Arc<rag::vector_store::RagVectorStore>,
     pub pdf_processor: Arc<processing::PdfProcessor>,
     pub image_processor: Arc<processing::ImageProcessor>,
-    pub openai_http_client: reqwest::Client,
-    pub openai_api_key: Arc<String>,
-    pub openai_model: Arc<String>,
+    pub gemini_http_client: reqwest::Client,
+    pub gemini_api_key: Arc<String>,
+    pub gemini_model: Arc<String>,
     pub embedding_service: Arc<embeddings::LocalEmbeddingService>,
     pub request_counter: request_counter::RequestCounter,
 }
@@ -41,10 +41,10 @@ async fn main() -> Result<()> {
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL not set, Set it in .env file");
 
-    let openai_api_key = std::env::var("OPENAI_API_KEY")
-        .expect("OPENAI_API_KEY not set, Set it in .env file");
-    let openai_model = std::env::var("OPENAI_MODEL")
-        .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+    let gemini_api_key = std::env::var("GEMINI_API_KEY")
+        .expect("GEMINI_API_KEY not set, Set it in .env file");
+    let gemini_model = std::env::var("GEMINI_MODEL")
+        .unwrap_or_else(|_| "gemini-1.5-flash".to_string());
 
     // Initialize PostgreSQL
     tracing::info!("Connecting to PostgreSQL...");
@@ -64,9 +64,9 @@ async fn main() -> Result<()> {
     let vector_count = vector_store.count().await;
     tracing::info!("Vector store initialized ({} existing documents)", vector_count);
 
-    // Initialize OpenAI client settings
-    tracing::info!("Initializing OpenAI HTTP client with model {}...", openai_model);
-    let openai_http_client = reqwest::Client::new();
+    // Initialize Gemini client settings
+    tracing::info!("Initializing Gemini HTTP client with model {}...", gemini_model);
+    let gemini_http_client = reqwest::Client::new();
 
     // Initialize processors with local embeddings
     let pdf_processor = Arc::new(processing::PdfProcessor::new(embedding_service.clone())?);
@@ -82,9 +82,9 @@ async fn main() -> Result<()> {
         vector_store: vector_store.clone(),
         pdf_processor,
         image_processor,
-        openai_http_client,
-        openai_api_key: Arc::new(openai_api_key),
-        openai_model: Arc::new(openai_model),
+        gemini_http_client,
+        gemini_api_key: Arc::new(gemini_api_key),
+        gemini_model: Arc::new(gemini_model),
         embedding_service: embedding_service.clone(),
         request_counter,
     };

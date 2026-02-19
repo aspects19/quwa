@@ -2,11 +2,11 @@ use axum::{
     extract::{Json, State},
     response::sse::{Event, Sse},
 };
-use futures_util::{stream::Stream, StreamExt};
+use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 
-use crate::{AppState, auth::AppwriteClaims, rag::context_strategy};
+use crate::{AppState, auth::AppwriteClaims};
 
 #[derive(Debug, Deserialize)]
 pub struct ChatRequest {
@@ -31,94 +31,72 @@ pub struct SourceData {
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiChatRequest {
-    model: String,
-    messages: Vec<OpenAiMessage>,
-    temperature: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<OpenAiResponseFormat>,
+#[serde(rename_all = "camelCase")]
+struct GeminiGenerateRequest {
+    contents: Vec<GeminiContent>,
+    generation_config: GeminiGenerationConfig,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiMessage {
+struct GeminiContent {
     role: String,
-    content: String,
+    parts: Vec<GeminiPart>,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiResponseFormat {
-    #[serde(rename = "type")]
-    type_name: String,
-    json_schema: OpenAiJsonSchema,
+struct GeminiPart {
+    text: String,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiJsonSchema {
-    name: String,
-    strict: bool,
-    schema: serde_json::Value,
+#[serde(rename_all = "camelCase")]
+struct GeminiGenerationConfig {
+    temperature: f32,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiChatResponse {
-    choices: Vec<OpenAiChoice>,
+struct GeminiGenerateResponse {
+    candidates: Vec<GeminiCandidate>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiResponseMessage,
+struct GeminiCandidate {
+    content: GeminiResponseContent,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiResponseMessage {
-    content: String,
+struct GeminiResponseContent {
+    parts: Vec<GeminiResponsePart>,
 }
+
+#[derive(Debug, Deserialize)]
+struct GeminiResponsePart {
+    text: Option<String>,
+}
+
+// ── Pipeline output types ────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct ThinkingOnlyOutput {
     thinking_steps: Vec<String>,
 }
 
+/// Pass 1 output: AI-normalized clinical query
 #[derive(Debug, Deserialize)]
-struct OpenAiStreamChunk {
-    choices: Vec<OpenAiStreamChoice>,
+struct NormalizedQuery {
+    clinical_query: String,
+    key_symptoms: Vec<String>,
 }
 
+/// Pass 2 output: AI-selected best candidate from the shortlist
 #[derive(Debug, Deserialize)]
-struct OpenAiStreamChoice {
-    delta: OpenAiStreamDelta,
+struct CandidateSelection {
+    /// 0-based index into the top-K results list
+    selected_index: usize,
+    reasoning: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenAiStreamDelta {
-    content: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct TopMatch {
-    label: Option<String>,
-    similarity: Option<f32>,
-    orpha_code: Option<String>,
-}
-
-impl TopMatch {
-    fn to_prompt_line(&self) -> String {
-        match (&self.label, self.similarity, &self.orpha_code) {
-            (Some(label), Some(sim), Some(code)) => {
-                format!("TOP VECTOR MATCH: {} (Orpha: {}) with similarity {:.2}.", label, code, sim)
-            }
-            (Some(label), Some(sim), None) => {
-                format!("TOP VECTOR MATCH: {} with similarity {:.2}.", label, sim)
-            }
-            (Some(label), None, _) => {
-                format!("TOP VECTOR MATCH: {}.", label)
-            }
-            _ => "TOP VECTOR MATCH: none.".to_string(),
-        }
-    }
-}
+// ── Main handler ─────────────────────────────────────────────────────────────
 
 pub async fn chat_handler(
     State(state): State<AppState>,
@@ -127,30 +105,59 @@ pub async fn chat_handler(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let user_message = payload.message.clone();
 
-    // Clone state components for async task
-    let vector_store = state.vector_store.clone();
-    let db_pool = state.db_pool.clone();
-    let openai_http_client = state.openai_http_client.clone();
-    let openai_api_key = state.openai_api_key.clone();
-    let openai_model = state.openai_model.clone();
+    let vector_store      = state.vector_store.clone();
+    let db_pool           = state.db_pool.clone();
+    let gemini_http_client = state.gemini_http_client.clone();
+    let gemini_api_key    = state.gemini_api_key.clone();
+    let gemini_model      = state.gemini_model.clone();
     let embedding_service = state.embedding_service.clone();
-    let user_id = claims.user_id.clone();
-    let request_counter = state.request_counter.clone();
+    let user_id           = claims.user_id.clone();
+    let request_counter   = state.request_counter.clone();
 
-    // Create events stream with RAG integration
     let stream = async_stream::stream! {
+
+        // ── Step 0: acknowledge ──────────────────────────────────────────────
         yield Ok::<Event, Infallible>(Event::default()
             .event("thinking")
-            .json_data(ThinkingData {
-                step: "Analyzing patient query and symptoms...".to_string()
-            })
+            .json_data(ThinkingData { step: "Analyzing symptoms...".to_string() })
             .unwrap());
 
+        // ── Pass 1: AI symptom normalization ─────────────────────────────────
         yield Ok::<Event, Infallible>(Event::default()
             .event("thinking")
-            .json_data(ThinkingData {
-                step: "Generating semantic representation...".to_string()
-            })
+            .json_data(ThinkingData { step: "Normalizing to clinical terminology...".to_string() })
+            .unwrap());
+
+        let normalized = match call_gemini_normalize(
+            &gemini_http_client,
+            &gemini_api_key,
+            &gemini_model,
+            &user_message,
+        ).await {
+            Ok(n) => {
+                if !n.key_symptoms.is_empty() {
+                    yield Ok::<Event, Infallible>(Event::default()
+                        .event("thinking")
+                        .json_data(ThinkingData {
+                            step: format!("Key symptoms: {}", n.key_symptoms.join(", "))
+                        })
+                        .unwrap());
+                }
+                n
+            }
+            Err(e) => {
+                tracing::warn!("Symptom normalization failed, using raw message: {}", e);
+                NormalizedQuery {
+                    clinical_query: user_message.clone(),
+                    key_symptoms: vec![],
+                }
+            }
+        };
+
+        // ── Embed the normalized clinical query ──────────────────────────────
+        yield Ok::<Event, Infallible>(Event::default()
+            .event("thinking")
+            .json_data(ThinkingData { step: "Generating semantic embedding...".to_string() })
             .unwrap());
 
         let enable_embeddings = std::env::var("ENABLE_EMBEDDINGS")
@@ -158,42 +165,41 @@ pub async fn chat_handler(
             .to_lowercase() == "true";
 
         let query_embedding = if enable_embeddings {
-            match embedding_service.embed_text(&user_message).await {
+            match embedding_service.embed_text(&normalized.clinical_query).await {
                 Ok(emb) => emb,
                 Err(e) => {
-                    tracing::error!("Local embedding generation failed: {}", e);
+                    tracing::error!("Embedding failed: {}", e);
                     yield Ok::<Event, Infallible>(Event::default()
                         .event("thinking")
                         .json_data(ThinkingData {
-                            step: "Embedding failed, proceeding without context search...".to_string()
+                            step: "Embedding failed, proceeding without vector context...".to_string()
                         })
                         .unwrap());
                     vec![0.0; 384]
                 }
             }
         } else {
-            tracing::info!("Embeddings disabled via ENABLE_EMBEDDINGS=false");
             vec![0.0; 384]
         };
 
+        // ── Vector search: top 10 candidates ─────────────────────────────────
         yield Ok::<Event, Infallible>(Event::default()
             .event("thinking")
-            .json_data(ThinkingData {
-                step: "Searching medical knowledge base and patient records...".to_string()
-            })
+            .json_data(ThinkingData { step: "Searching medical knowledge base...".to_string() })
             .unwrap());
 
-        let user_files = match crate::db::queries::get_user_files(&db_pool,
+        let _user_files = match crate::db::queries::get_user_files(
+            &db_pool,
             crate::db::queries::get_or_create_user(&db_pool, &user_id, None, None)
                 .await
                 .map(|u| u.id)
                 .unwrap_or(0)
         ).await {
             Ok(files) => files,
-            Err(_) => vec![]
+            Err(_) => vec![],
         };
 
-        let rag_results = match vector_store.search(query_embedding, 5).await {
+        let rag_results = match vector_store.search(query_embedding, 10).await {
             Ok(results) => results,
             Err(e) => {
                 tracing::error!("Vector search failed: {}", e);
@@ -201,61 +207,83 @@ pub async fn chat_handler(
             }
         };
 
-        let _strategy = context_strategy::determine_strategy(&user_files, &user_message);
-
         yield Ok::<Event, Infallible>(Event::default()
             .event("thinking")
             .json_data(ThinkingData {
-                step: format!("Found {} relevant medical references", rag_results.len())
+                step: format!("Found {} candidate conditions, selecting best match...", rag_results.len())
             })
             .unwrap());
 
-        let top_match = extract_top_condition(&rag_results);
-        if let Some(top_match_label) = top_match.label.clone() {
-            yield Ok::<Event, Infallible>(Event::default()
-                .event("thinking")
-                .json_data(ThinkingData {
-                    step: format!("Top match: {}", top_match_label)
-                })
-                .unwrap());
-        }
-
-        let context = build_rag_context(&rag_results);
-
-        yield Ok::<Event, Infallible>(Event::default()
-            .event("thinking")
-            .json_data(ThinkingData {
-                step: "Calling OpenAI model...".to_string()
-            })
-            .unwrap());
-
-        let top_match_note = top_match.to_prompt_line();
-
-        let enhanced_prompt = if !context.is_empty() {
-            format!(
-                "RELEVANT MEDICAL KNOWLEDGE:\n{}\n\n{}\n\nPATIENT QUERY:\n{}",
-                context, top_match_note, user_message
-            )
+        // ── Pass 2: AI candidate selection ───────────────────────────────────
+        let selected_match = if !rag_results.is_empty() {
+            match call_gemini_select(
+                &gemini_http_client,
+                &gemini_api_key,
+                &gemini_model,
+                &user_message,
+                &rag_results,
+            ).await {
+                Ok(sel) => {
+                    yield Ok::<Event, Infallible>(Event::default()
+                        .event("thinking")
+                        .json_data(ThinkingData {
+                            step: format!("AI reasoning: {}", sel.reasoning)
+                        })
+                        .unwrap());
+                    rag_results.get(sel.selected_index).cloned()
+                        .or_else(|| rag_results.first().cloned())
+                }
+                Err(e) => {
+                    tracing::warn!("Candidate selection failed, using top vector result: {}", e);
+                    rag_results.first().cloned()
+                }
+            }
         } else {
-            format!(
-                "PATIENT QUERY:\n{}\n\nNo specific retrieved records were found for this query.\n\n{}",
-                user_message, top_match_note
-            )
+            None
+        };
+
+        // ── Build enhanced prompt for final answer call ───────────────────────
+        let context = build_rag_context(&rag_results);
+        let selected_label = selected_match.as_ref().and_then(|(text, _score, _meta)| {
+            parse_condition_from_text(text).map(|(name, _)| name)
+        });
+
+        let enhanced_prompt = match &selected_match {
+            Some((text, score, meta)) => {
+                let orpha = meta.orpha_code.as_deref().unwrap_or("unknown");
+                let label = selected_label.as_deref().unwrap_or("unknown condition");
+                format!(
+                    "SELECTED BEST MATCH (AI-chosen from top 10 vector results):\n\
+                     Condition: {} (Orpha: {})\nSimilarity: {:.2}\nContext:\n{}\n\n\
+                     ALL CANDIDATES CONTEXT:\n{}\n\nPATIENT QUERY:\n{}\n\nKEY CLINICAL TERMS:\n{}",
+                    label, orpha, score, text, context, user_message,
+                    normalized.key_symptoms.join(", ")
+                )
+            }
+            None => {
+                format!(
+                    "PATIENT QUERY:\n{}\n\nNo matching conditions found in the knowledge base.\n\
+                     KEY CLINICAL TERMS:\n{}",
+                    user_message,
+                    normalized.key_symptoms.join(", ")
+                )
+            }
         };
 
         request_counter.log_chat_request(
-            &format!("OpenAI chat | User query: {}", user_message.chars().take(50).collect::<String>())
+            &format!("Gemini chat | User query: {}", user_message.chars().take(50).collect::<String>())
         );
 
+        // ── Optional thinking steps (decorative) ─────────────────────────────
         const MAX_THINKING_RETRIES: u32 = 3;
         const THINKING_BASE_DELAY_MS: u64 = 1200;
 
         let mut thinking_steps: Vec<String> = Vec::new();
         for attempt in 0..MAX_THINKING_RETRIES {
-            match call_openai_thinking(
-                &openai_http_client,
-                &openai_api_key,
-                &openai_model,
+            match call_gemini_thinking(
+                &gemini_http_client,
+                &gemini_api_key,
+                &gemini_model,
                 &enhanced_prompt,
                 &user_message,
             ).await {
@@ -264,135 +292,74 @@ pub async fn chat_handler(
                     break;
                 }
                 Err(e) => {
-                    let error_msg = e.to_string();
-                    let rate_limited = error_msg.contains("429") || error_msg.contains("rate_limit") || error_msg.contains("Rate limit");
+                    let err_str = e.to_string();
+                    let rate_limited = err_str.contains("429")
+                        || err_str.contains("rate_limit")
+                        || err_str.contains("Rate limit");
 
                     if rate_limited && attempt < MAX_THINKING_RETRIES - 1 {
                         let jitter = ((attempt as u64 + 1) * 173) % 500;
                         let delay = THINKING_BASE_DELAY_MS * 2_u64.pow(attempt) + jitter;
-
-                        tracing::warn!(
-                            "OpenAI thinking rate limit hit, retrying in {}ms (attempt {}/{})",
-                            delay,
-                            attempt + 1,
-                            MAX_THINKING_RETRIES
-                        );
-
+                        tracing::warn!("Gemini thinking rate limited, retrying in {}ms", delay);
                         yield Ok::<Event, Infallible>(Event::default()
                             .event("thinking")
                             .json_data(ThinkingData {
                                 step: format!("Rate limit hit, retrying in {}s...", delay / 1000)
                             })
                             .unwrap());
-
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
                         continue;
                     }
-
-                    tracing::warn!("Could not generate model thinking steps: {}", e);
+                    tracing::warn!("Could not generate thinking steps: {}", e);
                     break;
                 }
             }
         }
 
-        for step in thinking_steps.iter().take(8) {
+        for step in thinking_steps.iter().take(6) {
             yield Ok::<Event, Infallible>(Event::default()
                 .event("thinking")
                 .json_data(ThinkingData { step: step.clone() })
                 .unwrap());
         }
 
-        match start_openai_answer_stream(
-            &openai_http_client,
-            &openai_api_key,
-            &openai_model,
+        // ── Final answer ──────────────────────────────────────────────────────
+        match call_gemini_answer(
+            &gemini_http_client,
+            &gemini_api_key,
+            &gemini_model,
             &enhanced_prompt,
             &user_message,
         ).await {
-            Ok(res) => {
-                let mut upstream = res.bytes_stream();
-                let mut buffer = String::new();
-                let mut stream_done = false;
-
-                while let Some(item) = upstream.next().await {
-                    let bytes = match item {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::error!("OpenAI stream chunk read error: {}", e);
-                            break;
-                        }
-                    };
-
-                    let text = String::from_utf8_lossy(&bytes);
-                    buffer.push_str(&text);
-
-                    while let Some(idx) = buffer.find('\n') {
-                        let line = buffer[..idx].trim().to_string();
-                        buffer = buffer[idx + 1..].to_string();
-
-                        if !line.starts_with("data: ") {
-                            continue;
-                        }
-
-                        let payload = line.trim_start_matches("data: ").trim();
-                        if payload == "[DONE]" {
-                            stream_done = true;
-                            break;
-                        }
-
-                        if payload.is_empty() {
-                            continue;
-                        }
-
-                        let parsed: OpenAiStreamChunk = match serde_json::from_str(payload) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-
-                        if let Some(content) = parsed
-                            .choices
-                            .first()
-                            .and_then(|c| c.delta.content.clone())
-                        {
-                            if content.is_empty() {
-                                continue;
-                            }
-                            yield Ok::<Event, Infallible>(Event::default()
-                                .event("response")
-                                .json_data(ResponseData {
-                                    content,
-                                })
-                                .unwrap());
-                        }
-                    }
-
-                    if stream_done {
-                        break;
-                    }
+            Ok(content) => {
+                if !content.trim().is_empty() {
+                    yield Ok::<Event, Infallible>(Event::default()
+                        .event("response")
+                        .json_data(ResponseData { content })
+                        .unwrap());
                 }
             }
             Err(e) => {
-                tracing::error!("OpenAI streaming error: {}", e);
+                tracing::error!("Gemini answer error: {}", e);
                 yield Ok::<Event, Infallible>(Event::default()
                     .event("response")
                     .json_data(ResponseData {
-                        content: "I couldn't generate a response right now. Please try again in a few seconds.".to_string()
+                        content: "I couldn't generate a response right now. Please try again.".to_string()
                     })
                     .unwrap());
             }
         }
 
-        if !rag_results.is_empty() {
-            for (_text, score, metadata) in rag_results.iter().take(3) {
-                yield Ok::<Event, Infallible>(Event::default()
-                    .event("source")
-                    .json_data(SourceData {
-                        source_type: metadata.source_type.clone(),
-                        source_id: metadata.source_id.clone(),
-                        relevance: *score,
-                    })
-                    .unwrap());
-            }
+        // ── Sources ───────────────────────────────────────────────────────────
+        for (_text, score, metadata) in rag_results.iter().take(3) {
+            yield Ok::<Event, Infallible>(Event::default()
+                .event("source")
+                .json_data(SourceData {
+                    source_type: metadata.source_type.clone(),
+                    source_id: metadata.source_id.clone(),
+                    relevance: *score,
+                })
+                .unwrap());
         }
 
         yield Ok::<Event, Infallible>(Event::default()
@@ -404,55 +371,38 @@ pub async fn chat_handler(
     Sse::new(stream)
 }
 
-async fn call_openai_thinking(
+// ── Pass 1: Symptom normalization ─────────────────────────────────────────────
+
+async fn call_gemini_normalize(
     http_client: &reqwest::Client,
     api_key: &str,
     model: &str,
-    context_prompt: &str,
     user_message: &str,
-) -> anyhow::Result<ThinkingOnlyOutput> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "thinking_steps": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "A short list of concise reasoning steps for the user interface."
-            }
-        },
-        "required": ["thinking_steps"],
-        "additionalProperties": false
-    });
+) -> anyhow::Result<NormalizedQuery> {
+    let prompt = format!(
+        "You are a clinical terminology assistant. \
+         Extract and normalize the patient's described symptoms into precise clinical terms \
+         that are optimal for embedding-based similarity search against a rare disease database.\n\n\
+         Return ONLY strict JSON with this exact schema:\n\
+         {{\"clinical_query\": \"concise clinical description for embedding\", \"key_symptoms\": [\"symptom1\", \"symptom2\"]}}\n\n\
+         Rules:\n\
+         - clinical_query: 1-3 sentences using medical terminology (e.g. 'proximal muscle weakness' not 'arms are weak')\n\
+         - key_symptoms: 3-7 individual normalized symptoms as strings\n\
+         - No markdown, no explanation, output JSON only.\n\n\
+         Patient description:\n{}",
+        user_message
+    );
 
-    let system_prompt = "You are a medical assistant for a hackathon demo. Return concise UI-friendly reasoning as thinking_steps (3-6 short lines). Do not include hidden chain-of-thought details.";
-
-    let req_body = OpenAiChatRequest {
-        model: model.to_string(),
-        messages: vec![
-            OpenAiMessage {
-                role: "system".to_string(),
-                content: system_prompt.to_string(),
-            },
-            OpenAiMessage {
-                role: "user".to_string(),
-                content: format!("{}\n\nUser message:\n{}", context_prompt, user_message),
-            }
-        ],
-        temperature: 0.2,
-        stream: None,
-        response_format: Some(OpenAiResponseFormat {
-            type_name: "json_schema".to_string(),
-            json_schema: OpenAiJsonSchema {
-                name: "medical_chat_output".to_string(),
-                strict: true,
-                schema,
-            }
-        }),
+    let req_body = GeminiGenerateRequest {
+        contents: vec![GeminiContent {
+            role: "user".to_string(),
+            parts: vec![GeminiPart { text: prompt }],
+        }],
+        generation_config: GeminiGenerationConfig { temperature: 0.1 },
     };
 
     let res = http_client
-        .post("https://api.openai.com/v1/chat/completions")
-        .bearer_auth(api_key)
+        .post(gemini_endpoint(model, api_key))
         .json(&req_body)
         .send()
         .await?;
@@ -461,65 +411,229 @@ async fn call_openai_thinking(
     let body = res.text().await?;
 
     if !status.is_success() {
-        return Err(anyhow::anyhow!("OpenAI error {}: {}", status, body));
+        return Err(anyhow::anyhow!("Gemini normalize error {}: {}", status, body));
     }
 
-    let parsed: OpenAiChatResponse = serde_json::from_str(&body)
-        .map_err(|e| anyhow::anyhow!("Failed to parse OpenAI response: {} | body: {}", e, body))?;
+    let content = extract_gemini_text(&body)?;
+    let json_payload = extract_json_object(&content).unwrap_or(content);
+    let output: NormalizedQuery = serde_json::from_str(&json_payload)
+        .map_err(|e| anyhow::anyhow!("Failed to parse normalize JSON: {} | content: {}", e, json_payload))?;
 
-    let content = parsed
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .ok_or_else(|| anyhow::anyhow!("OpenAI returned no choices"))?;
-
-    let output: ThinkingOnlyOutput = serde_json::from_str(&content)
-        .map_err(|e| anyhow::anyhow!("Failed to parse thinking JSON output: {} | content: {}", e, content))?;
-
+    tracing::info!("Normalized clinical query: {}", output.clinical_query);
     Ok(output)
 }
 
-async fn start_openai_answer_stream(
+// ── Pass 2: Candidate selection ───────────────────────────────────────────────
+
+async fn call_gemini_select(
     http_client: &reqwest::Client,
     api_key: &str,
     model: &str,
-    context_prompt: &str,
     user_message: &str,
-) -> anyhow::Result<reqwest::Response> {
-    let req_body = OpenAiChatRequest {
-        model: model.to_string(),
-        messages: vec![
-            OpenAiMessage {
-                role: "system".to_string(),
-                content: "You are a medical assistant for a hackathon demo. Use the top vector match if provided. If the top vector match is none, say you cannot identify a likely condition and provide general next steps. Output format:\nMost likely condition: <single condition name> (Orpha code if provided)\nReasons:\n- <short reason>\n- <short reason>\nNext steps:\n- <action>\n- <action>\nInclude a brief disclaimer that this is not a diagnosis. Do not list multiple conditions.".to_string(),
-            },
-            OpenAiMessage {
-                role: "user".to_string(),
-                content: format!("{}\n\nUser message:\n{}", context_prompt, user_message),
-            },
-        ],
-        temperature: 0.2,
-        stream: Some(true),
-        response_format: None,
+    candidates: &[(String, f32, crate::rag::vector_store::DocumentMetadata)],
+) -> anyhow::Result<CandidateSelection> {
+    let candidate_list = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, (text, score, meta))| {
+            let label = parse_condition_from_text(text)
+                .map(|(name, _)| name)
+                .or_else(|| meta.orpha_code.as_ref().map(|c| format!("Orpha {}", c)))
+                .unwrap_or_else(|| "Unknown".to_string());
+            let orpha = meta.orpha_code.as_deref().unwrap_or("?");
+            let snippet: String = text.chars().take(300).collect();
+            format!("[{}] {} (Orpha: {}) — similarity {:.2}\n{}", i, label, orpha, score, snippet)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let prompt = format!(
+        "You are a rare disease diagnostic assistant. \
+         A patient described their symptoms and we retrieved {} candidate conditions from a vector database.\n\n\
+         Patient description:\n{}\n\n\
+         Candidates (0-indexed):\n{}\n\n\
+         Pick the single best matching condition for this patient.\n\
+         Return ONLY strict JSON:\n\
+         {{\"selected_index\": <integer 0 to {}>, \"reasoning\": \"one sentence why\"}}\n\
+         No markdown, no explanation. JSON only.",
+        candidates.len(),
+        user_message,
+        candidate_list,
+        candidates.len().saturating_sub(1)
+    );
+
+    let req_body = GeminiGenerateRequest {
+        contents: vec![GeminiContent {
+            role: "user".to_string(),
+            parts: vec![GeminiPart { text: prompt }],
+        }],
+        generation_config: GeminiGenerationConfig { temperature: 0.1 },
     };
 
     let res = http_client
-        .post("https://api.openai.com/v1/chat/completions")
-        .bearer_auth(api_key)
+        .post(gemini_endpoint(model, api_key))
         .json(&req_body)
         .send()
         .await?;
 
     let status = res.status();
+    let body = res.text().await?;
+
     if !status.is_success() {
-        let body = res.text().await.unwrap_or_default();
-        return Err(anyhow::anyhow!("OpenAI stream error {}: {}", status, body));
+        return Err(anyhow::anyhow!("Gemini select error {}: {}", status, body));
     }
 
-    Ok(res)
+    let content = extract_gemini_text(&body)?;
+    let json_payload = extract_json_object(&content).unwrap_or(content);
+    let mut output: CandidateSelection = serde_json::from_str(&json_payload)
+        .map_err(|e| anyhow::anyhow!("Failed to parse select JSON: {} | content: {}", e, json_payload))?;
+
+    // Guard: clamp index to valid range
+    if output.selected_index >= candidates.len() {
+        tracing::warn!(
+            "AI returned out-of-range selected_index {}, clamping to 0",
+            output.selected_index
+        );
+        output.selected_index = 0;
+    }
+
+    tracing::info!(
+        "AI selected candidate {} with reasoning: {}",
+        output.selected_index,
+        output.reasoning
+    );
+    Ok(output)
 }
 
-// Build context string from RAG results
+// ── Decorative thinking steps ─────────────────────────────────────────────────
+
+async fn call_gemini_thinking(
+    http_client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+    context_prompt: &str,
+    user_message: &str,
+) -> anyhow::Result<ThinkingOnlyOutput> {
+    let prompt = format!(
+        "You are a medical assistant for a hackathon demo. Return ONLY strict JSON with this schema:\n\
+         {{\"thinking_steps\": [\"short step\", \"short step\"]}}\n\
+         Use 3-6 concise UI-friendly steps, no hidden chain-of-thought.\n\n\
+         Context:\n{}\n\nUser message:\n{}",
+        context_prompt, user_message
+    );
+
+    let req_body = GeminiGenerateRequest {
+        contents: vec![GeminiContent {
+            role: "user".to_string(),
+            parts: vec![GeminiPart { text: prompt }],
+        }],
+        generation_config: GeminiGenerationConfig { temperature: 0.2 },
+    };
+
+    let res = http_client
+        .post(gemini_endpoint(model, api_key))
+        .json(&req_body)
+        .send()
+        .await?;
+
+    let status = res.status();
+    let body = res.text().await?;
+
+    if !status.is_success() {
+        return Err(anyhow::anyhow!("Gemini error {}: {}", status, body));
+    }
+
+    let content = extract_gemini_text(&body)?;
+    let json_payload = extract_json_object(&content).unwrap_or(content);
+    let output: ThinkingOnlyOutput = serde_json::from_str(&json_payload)
+        .map_err(|e| anyhow::anyhow!("Failed to parse thinking JSON: {} | content: {}", e, json_payload))?;
+
+    Ok(output)
+}
+
+// ── Final answer ──────────────────────────────────────────────────────────────
+
+async fn call_gemini_answer(
+    http_client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+    context_prompt: &str,
+    user_message: &str,
+) -> anyhow::Result<String> {
+    let prompt = format!(
+        "You are a medical assistant. The AI pipeline has already selected the best matching \
+         rare disease from a vector database. Use the SELECTED BEST MATCH to formulate your answer.\n\n\
+         If no match was found, say you cannot identify a likely condition and provide general next steps.\n\n\
+         Output format (use these exact headers):\n\
+         Most likely condition: <single condition name> (Orpha code if available)\n\
+         Reasons:\n- <reason>\n- <reason>\n\
+         Next steps:\n- <action>\n- <action>\n\
+         Disclaimer: This is not a medical diagnosis. Please consult a qualified physician.\n\n\
+         Do not list multiple conditions. Be concise.\n\n\
+         {}\n\nUser message:\n{}",
+        context_prompt, user_message
+    );
+
+    let req_body = GeminiGenerateRequest {
+        contents: vec![GeminiContent {
+            role: "user".to_string(),
+            parts: vec![GeminiPart { text: prompt }],
+        }],
+        generation_config: GeminiGenerationConfig { temperature: 0.2 },
+    };
+
+    let res = http_client
+        .post(gemini_endpoint(model, api_key))
+        .json(&req_body)
+        .send()
+        .await?;
+
+    let status = res.status();
+    let body = res.text().await?;
+    if !status.is_success() {
+        return Err(anyhow::anyhow!("Gemini error {}: {}", status, body));
+    }
+
+    extract_gemini_text(&body)
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn gemini_endpoint(model: &str, api_key: &str) -> String {
+    format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        model, api_key
+    )
+}
+
+fn extract_gemini_text(body: &str) -> anyhow::Result<String> {
+    let parsed: GeminiGenerateResponse = serde_json::from_str(body)
+        .map_err(|e| anyhow::anyhow!("Failed to parse Gemini response: {} | body: {}", e, body))?;
+
+    let text = parsed
+        .candidates
+        .first()
+        .and_then(|c| {
+            let combined = c.content.parts.iter()
+                .filter_map(|p| p.text.clone())
+                .collect::<Vec<_>>()
+                .join("");
+            if combined.is_empty() { None } else { Some(combined) }
+        })
+        .ok_or_else(|| anyhow::anyhow!("Gemini returned no text candidates"))?;
+
+    Ok(text)
+}
+
+fn extract_json_object(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(text[start..=end].to_string())
+}
+
 fn build_rag_context(results: &[(String, f32, crate::rag::vector_store::DocumentMetadata)]) -> String {
     if results.is_empty() {
         return String::new();
@@ -531,41 +645,18 @@ fn build_rag_context(results: &[(String, f32, crate::rag::vector_store::Document
         .map(|(i, (text, score, metadata))| {
             let source = match metadata.source_type.as_str() {
                 "orphanet" => format!("Orphanet: {}", metadata.source_id),
-                "pdf" => format!("PDF: {}", metadata.source_id),
-                "image" => format!("Image: {}", metadata.source_id),
-                _ => metadata.source_id.clone(),
+                "pdf"      => format!("PDF: {}", metadata.source_id),
+                "image"    => format!("Image: {}", metadata.source_id),
+                _          => metadata.source_id.clone(),
             };
-
             format!(
                 "[{}] Source: {} (Relevance: {:.2})\n{}",
-                i + 1,
-                source,
-                score,
-                text.chars().take(600).collect::<String>()
+                i + 1, source, score,
+                text.chars().take(400).collect::<String>()
             )
         })
         .collect::<Vec<_>>()
         .join("\n\n")
-}
-
-fn extract_top_condition(
-    results: &[(String, f32, crate::rag::vector_store::DocumentMetadata)],
-) -> TopMatch {
-    let mut top_match = TopMatch::default();
-    let Some((text, similarity, metadata)) = results.first() else {
-        return top_match;
-    };
-
-    if let Some((name, orpha_code)) = parse_condition_from_text(text) {
-        top_match.label = Some(name);
-        top_match.orpha_code = orpha_code.or(metadata.orpha_code.clone());
-    } else if let Some(orpha_code) = metadata.orpha_code.clone() {
-        top_match.label = Some(format!("Orpha {}", orpha_code));
-        top_match.orpha_code = Some(orpha_code);
-    }
-
-    top_match.similarity = Some(*similarity);
-    top_match
 }
 
 fn parse_condition_from_text(text: &str) -> Option<(String, Option<String>)> {

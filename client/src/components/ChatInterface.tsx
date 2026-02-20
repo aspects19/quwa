@@ -355,7 +355,7 @@ export default function ChatInterface() {
                     <div
                       ref={inputPreviewRef}
                       aria-hidden="true"
-                      className="max-h-[40vh] overflow-y-auto bg-transparent text-base leading-relaxed text-white whitespace-pre-wrap break-words"
+                      className="max-h-[40vh] overflow-y-auto bg-transparent text-base leading-relaxed text-white whitespace-pre-wrap wrap-break-word"
                     >
                       {input.trim() ? (
                         <MarkdownText content={input} mode="lists" />
@@ -493,7 +493,7 @@ export default function ChatInterface() {
               <div
                 ref={inputPreviewRef}
                 aria-hidden="true"
-                className="max-h-[40vh] overflow-y-auto bg-transparent text-base leading-relaxed text-white whitespace-pre-wrap break-words"
+                className="max-h-[40vh] overflow-y-auto bg-transparent text-base leading-relaxed text-white whitespace-pre-wrap wrap-break-word"
               >
                 {input.trim() ? (
                   <MarkdownText content={input} mode="lists" />

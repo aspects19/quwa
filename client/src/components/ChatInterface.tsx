@@ -404,7 +404,7 @@ export default function ChatInterface() {
                         : "bg-white/10 border border-white/10 text-white backdrop-blur-md"
                     }`}>
                       {message.role === "assistant" && (
-                        <div className="text-xs font-medium text-white/60 mb-2">AI Assistant</div>
+                        <div className="text-xs font-medium text-white/60 mb-2">Quwa AI</div>
                       )}
                       <div className="text-base leading-relaxed">
                         <MarkdownText content={message.content} />
@@ -418,7 +418,7 @@ export default function ChatInterface() {
               </div>
             ))}
             {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
-              <div className="flex items-center gap-2 text-white/50 animate-pulse">
+              <div className="flex items-center gap-2 text-white/50">
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span className="text-sm">Analyzing…</span>
               </div>
